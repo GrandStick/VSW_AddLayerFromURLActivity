@@ -1,0 +1,35 @@
+{
+    "name": "vertigis-workflow-project",
+    "private": true,
+    "version": "1.0.0",
+    "description": "",
+    "license": "UNLICENSED",
+    "author": "",
+    "type": "module",
+    "scripts": {
+        "build": "vertigis-workflow-sdk build",
+        "generate": "vertigis-workflow-sdk generate",
+        "start": "vertigis-workflow-sdk start",
+        "lint": "eslint --ext .ts,.tsx",
+        "prettier": "prettier --write \"**/*.json\" \"**/*.js\" \"**/*.ts\" \"**/*.tsx\""
+    },
+    "devDependencies": {
+        "@types/arcgis-js-api": "^4.27.2",
+        "@vertigis/workflow": "5.50.0",
+        "@vertigis/workflow-sdk": "6.0.0",
+        "prettier": "^3.3.1",
+        "typescript": "^5.4.3"
+    },
+    "overrides": {
+        "@vertigis/react-ui": {
+            "react": ">=18 <19",
+            "react-dom": ">=18 <19"
+        }
+    },
+    "browserslist": [
+        "last 2 chrome versions",
+        "last 2 edge versions",
+        "last 2 firefox versions",
+        "last 2 safari versions"
+    ]
+}
