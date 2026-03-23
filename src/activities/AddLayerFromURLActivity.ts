@@ -2,50 +2,35 @@ import type { IActivityHandler } from "@vertigis/workflow";
 import { MapProvider } from "@vertigis/workflow/activities/arcgis/MapProvider";
 import { activate } from "@vertigis/workflow/Hooks";
 import type { IActivityContext } from "@vertigis/workflow/IActivityHandler";
-import esriConfig from "esri/config";
-import Layer from "esri/layers/Layer";
-import GroupLayer from "esri/layers/GroupLayer";
-import IdentityManager from "esri/identity/IdentityManager";
+import * as esriConfig from "esri/config";
+import FeatureLayer from "esri/layers/FeatureLayer";
+import * as IdentityManager from "esri/identity/IdentityManager";
 import ServerInfo from "esri/identity/ServerInfo";
 
 export interface AddLayerFromURLActivityInputs {
-    /**
-     * @displayName Service URL
-     * @description URL du FeatureServer ou d'un layer spécifique (ex: .../FeatureServer ou .../FeatureServer/0)
-     * @required
-     */
+    /** @displayName Layer URL @description URL de la feature layer (ex: .../FeatureServer/0) @required */
     layerUrl: string;
-    /**
-     * @displayName Token / API Key
-     * @description Token ArcGIS Enterprise ou API key ArcGIS Online
-     * @required
-     */
+    /** @displayName Token / API Key @description Token ArcGIS Enterprise ou API key ArcGIS Online @required */
     apiKey: string;
-    /**
-     * @displayName Charger les tables relationnelles
-     * @description Si activé, charge tout le FeatureServer (couches + tables)
-     */
+    /** @displayName Charger les tables relationnelles @description Détecte et ajoute automatiquement les related tables */
     loadRelatedTables?: boolean;
-    /**
-     * @displayName URL Serveur Enterprise
-     * @description URL racine ArcGIS Enterprise (ex: https://monserveur/arcgis). Vide = ArcGIS Online.
-     */
+    /** @displayName URL Serveur Enterprise @description URL racine ArcGIS Enterprise (ex: https://monserveur/arcgis). Vide = ArcGIS Online. */
     serverUrl?: string;
 }
 
 export interface AddLayerFromURLActivityOutputs {
     /** @description Message de résultat */
     result: string;
-    /** @description Nombre de tables ajoutées dans map.tables */
+    /** @description Nombre de tables relationnelles trouvées et ajoutées */
     relatedTablesCount: number;
-    /** @description Nombre de couches spatiales ajoutées dans map.layers */
-    layersCount: number;
+    /** @description Debug: contenu brut des relationships du service */
+    debugRelationships: string;
 }
 
 /**
  * @displayName Add Layer From URL
  * @category Custom Activities
- * @description Ajoute un FeatureService complet (couches + tables relationnelles) à la carte depuis une URL.
+ * @description Ajoute une feature layer et ses tables relationnelles à la carte depuis une URL.
  * @supportedApps GWV
  */
 @activate(MapProvider)
@@ -65,11 +50,11 @@ export class AddLayerFromURLActivity implements IActivityHandler {
 
         // --- Authentification ---
         if (serverUrl) {
-            const serverInfo = new (ServerInfo as any)({
+            const info = new (ServerInfo as any)({
                 server: serverUrl,
                 tokenServiceUrl: `${serverUrl}/sharing/rest/generateToken`,
             });
-            (IdentityManager as any).registerServers([serverInfo]);
+            (IdentityManager as any).registerServers([info]);
             (IdentityManager as any).registerToken({ server: serverUrl, token: apiKey });
         } else {
             (esriConfig as any).apiKey = apiKey;
@@ -81,75 +66,75 @@ export class AddLayerFromURLActivity implements IActivityHandler {
         const map = mapProvider.map;
         if (!map) throw new Error("La carte n'est pas disponible.");
 
-        // --- Dériver l'URL du service (strip /0, /1... si présent) ---
-        // Accepte aussi bien .../FeatureServer que .../FeatureServer/0
-        const serviceUrl = /\/\d+$/.test(layerUrl)
-            ? layerUrl.substring(0, layerUrl.lastIndexOf("/"))
-            : layerUrl;
+        // --- Couche principale ---
+        const layer = new (FeatureLayer as any)({ url: layerUrl });
+        await layer.load();
+        map.add(layer);
+        console.log("[AddLayerFromURL] Couche principale ajoutée:", layerUrl);
 
-        let layersCount = 0;
-        let relatedTablesCount = 0;
+        const relationships = layer.relationships ?? [];
+        const debugRelationships = JSON.stringify(relationships);
+        console.log("[AddLayerFromURL] Relationships trouvées:", debugRelationships);
 
-        if (!loadRelatedTables) {
-            // Mode simple : ajoute uniquement la couche spécifiée
-            const singleLayer = new (Layer as any)({ url: layerUrl });
-            await (singleLayer as any).load();
-            map.add(singleLayer);
-            layersCount = 1;
+        if (!loadRelatedTables || relationships.length === 0) {
             return {
-                result: `Couche ajoutée : ${layerUrl}`,
+                result: `Couche ajoutée : ${layerUrl} (${relationships.length} relation(s) dans le service)`,
                 relatedTablesCount: 0,
-                layersCount: 1,
+                debugRelationships,
             };
         }
 
-        // --- Méthode robuste : charger tout le FeatureServer ---
-        const loaded = await (Layer as any).fromArcGISServerUrl({
-            url: serviceUrl,
-            properties: {
-                // Passe le token pour les services sécurisés Enterprise
-                ...(serverUrl ? {} : {}),
-            },
-        });
+        // --- Related tables ---
+        // L'URL de base du service (sans le /0 final)
+        const baseUrl = /\/\d+$/.test(layerUrl)
+            ? layerUrl.substring(0, layerUrl.lastIndexOf("/"))
+            : layerUrl;
 
-        if (loaded && (loaded as any).type === "group") {
-            // FeatureServer multi-couches → GroupLayer
-            const group = loaded as any;
+        const addedTableIds: number[] = [];
+        const errors: string[] = [];
 
-            // Couches spatiales
-            for (const child of group.layers?.items ?? []) {
-                if ((child as any).isTable) {
-                    map.tables.add(child);
-                    relatedTablesCount++;
+        for (const rel of relationships) {
+            const relId: number = rel.relatedTableId;
+            if (addedTableIds.includes(relId)) continue;
+
+            const relUrl = `${baseUrl}/${relId}`;
+            const relatedLayer = new (FeatureLayer as any)({ url: relUrl });
+
+            try {
+                await relatedLayer.load();
+                console.log(`[AddLayerFromURL] Table ID ${relId} chargée - isTable: ${relatedLayer.isTable}, geometryType: ${relatedLayer.geometryType}`);
+
+                if (relatedLayer.isTable) {
+                    // Table non spatiale : map.tables (ArcGIS JS API)
+                    // ⚠️ map.tables ne notifie pas VertiGIS directement
+                    // → les tables doivent aussi être dans le webmap pour être vues dans Feature Details
+                    map.tables.add(relatedLayer);
+                    console.log(`[AddLayerFromURL] Table ID ${relId} ajoutée dans map.tables`);
                 } else {
-                    map.add(child);
-                    layersCount++;
+                    // Couche spatiale : map.layers via map.add()
+                    map.add(relatedLayer);
+                    console.log(`[AddLayerFromURL] Table ID ${relId} ajoutée dans map.layers`);
                 }
+                addedTableIds.push(relId);
+            } catch (err: any) {
+                const msg = `Table ID ${relId} (${relUrl}) : ${err?.message ?? err}`;
+                console.warn("[AddLayerFromURL] Erreur:", msg);
+                errors.push(msg);
             }
-
-            // Tables standalone (non spatiales exposées par le service)
-            for (const table of group.tables?.items ?? []) {
-                map.tables.add(table);
-                relatedTablesCount++;
-            }
-
-        } else if (loaded) {
-            // Service avec une seule couche
-            if ((loaded as any).isTable) {
-                map.tables.add(loaded);
-                relatedTablesCount++;
-            } else {
-                map.add(loaded);
-                layersCount++;
-            }
-        } else {
-            throw new Error(`Impossible de charger le service depuis : ${serviceUrl}`);
         }
 
+        const tableMsg = addedTableIds.length > 0
+            ? `+ ${addedTableIds.length} table(s) [IDs: ${addedTableIds.join(", ")}]`
+            : "(aucune table ajoutée)";
+
+        const errorMsg = errors.length > 0
+            ? ` | Erreurs: ${errors.join(" / ")}`
+            : "";
+
         return {
-            result: `Service chargé : ${layersCount} couche(s) + ${relatedTablesCount} table(s) depuis ${serviceUrl}`,
-            relatedTablesCount,
-            layersCount,
+            result: `Couche ajoutée ${tableMsg}${errorMsg}`,
+            relatedTablesCount: addedTableIds.length,
+            debugRelationships,
         };
     }
 }
