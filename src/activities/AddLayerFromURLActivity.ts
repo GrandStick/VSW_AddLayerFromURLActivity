@@ -10,51 +10,50 @@ import ServerInfo from "esri/identity/ServerInfo";
 export interface AddLayerFromURLActivityInputs {
     /**
      * @displayName Layer URL
-     * @description URL du FeatureServer ou d'un layer spécifique (.../FeatureServer ou .../FeatureServer/0)
+     * @description URL of a FeatureServer or a specific layer (.../FeatureServer or .../FeatureServer/0). Add the url avec the relation tables if you want it to be added
      * @required
      */
     layerUrl: string;
     /**
      * @displayName Token / API Key
-     * @description Token ArcGIS Enterprise ou API key ArcGIS Online
+     * @description  ArcGIS Enterprise Token or ArcGIS Online API key 
      * @required
      */
     apiKey: string;
     /**
-     * @displayName Charger les tables relationnelles
+     * @displayName Load relationship tables (true/false)
      * @description Détecte et ajoute automatiquement les related tables
      */
     loadRelatedTables?: boolean;
     /**
-     * @displayName URL Serveur Enterprise
-     * @description URL racine ArcGIS Enterprise (ex: https://monserveur/arcgis). Vide = ArcGIS Online.
+     * @displayName Enterprise server URL
+     * @description URL of the rooot of ArcGIS Enterprise (ex: https://myserver/arcgis). Empty = ArcGIS Online.
      */
     serverUrl?: string;
     /**
      * @displayName Map ID
-     * @description ID de la carte cible. Utilise la carte par défaut si vide.
+     * @description ID of the Map target. Use the default map if empty.
      */
     mapId?: string;
 }
 
 export interface AddLayerFromURLActivityOutputs {
-    /** @description Message de résultat */
+    /** @description Result message*/
     result: string;
-    /** @description Nombre de tables relationnelles ajoutées */
+    /** @description Number of related tables added */
     relatedTablesCount: number;
     /** @description Debug: relationships brutes du service */
     debugRelationships: string;
-    /** @description ID de la couche principale ajoutée — utilisable dans Get Layer */
+    /** @description ID of the main layer added — usable in Get Layer */
     layerId: string;
-    /** @description IDs des tables relationnelles ajoutées */
+    /** @description IDs of the related tables added */
     relatedTableIds: string[];
 }
 
 /**
  * @displayName Add Layer From URL
  * @category Custom Activities
- * @description Ajoute une feature layer et ses tables relationnelles à la carte depuis une URL.
- * @supportedApps GWV
+ * @description Add a feature layer to the map from a URL, with optional related tables. Supports ArcGIS Online and Enterprise (token or API key).
  */
 @activate(MapProvider)
 export class AddLayerFromURLActivity implements IActivityHandler {
