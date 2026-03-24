@@ -8,23 +8,46 @@ import * as IdentityManager from "esri/identity/IdentityManager";
 import ServerInfo from "esri/identity/ServerInfo";
 
 export interface AddLayerFromURLActivityInputs {
-    /** @displayName Layer URL @description URL de la feature layer (ex: .../FeatureServer/0) @required */
+    /**
+     * @displayName Layer URL
+     * @description URL du FeatureServer ou d'un layer spécifique (.../FeatureServer ou .../FeatureServer/0)
+     * @required
+     */
     layerUrl: string;
-    /** @displayName Token / API Key @description Token ArcGIS Enterprise ou API key ArcGIS Online @required */
+    /**
+     * @displayName Token / API Key
+     * @description Token ArcGIS Enterprise ou API key ArcGIS Online
+     * @required
+     */
     apiKey: string;
-    /** @displayName Charger les tables relationnelles @description Détecte et ajoute automatiquement les related tables */
+    /**
+     * @displayName Charger les tables relationnelles
+     * @description Détecte et ajoute automatiquement les related tables
+     */
     loadRelatedTables?: boolean;
-    /** @displayName URL Serveur Enterprise @description URL racine ArcGIS Enterprise (ex: https://monserveur/arcgis). Vide = ArcGIS Online. */
+    /**
+     * @displayName URL Serveur Enterprise
+     * @description URL racine ArcGIS Enterprise (ex: https://monserveur/arcgis). Vide = ArcGIS Online.
+     */
     serverUrl?: string;
+    /**
+     * @displayName Map ID
+     * @description ID de la carte cible. Utilise la carte par défaut si vide.
+     */
+    mapId?: string;
 }
 
 export interface AddLayerFromURLActivityOutputs {
     /** @description Message de résultat */
     result: string;
-    /** @description Nombre de tables relationnelles trouvées et ajoutées */
+    /** @description Nombre de tables relationnelles ajoutées */
     relatedTablesCount: number;
-    /** @description Debug: contenu brut des relationships du service */
+    /** @description Debug: relationships brutes du service */
     debugRelationships: string;
+    /** @description ID de la couche principale ajoutée — utilisable dans Get Layer */
+    layerId: string;
+    /** @description IDs des tables relationnelles ajoutées */
+    relatedTableIds: string[];
 }
 
 /**
@@ -43,7 +66,7 @@ export class AddLayerFromURLActivity implements IActivityHandler {
         context: IActivityContext,
         type: typeof MapProvider
     ): Promise<AddLayerFromURLActivityOutputs> {
-        const { layerUrl, apiKey, loadRelatedTables = true, serverUrl } = inputs;
+        const { layerUrl, apiKey, loadRelatedTables = true, serverUrl, mapId } = inputs;
 
         if (!layerUrl) throw new Error("'layerUrl' est requis.");
         if (!apiKey) throw new Error("'apiKey' est requis.");
@@ -60,66 +83,69 @@ export class AddLayerFromURLActivity implements IActivityHandler {
             (esriConfig as any).apiKey = apiKey;
         }
 
-        // --- Carte ---
+        // --- Carte : réutiliser le provider sans le recréer ---
         const mapProvider = type.create();
         await mapProvider.load();
-        const map = mapProvider.map;
+
+        // Si mapId fourni, cibler la bonne carte, sinon carte par défaut
+        const map = mapId
+            ? (mapProvider as any).getMap?.(mapId) ?? mapProvider.map
+            : mapProvider.map;
+
         if (!map) throw new Error("La carte n'est pas disponible.");
 
+        // --- Normaliser l'URL : /FeatureServer → /FeatureServer/0 ---
+        const isRootUrl = /\/FeatureServer\/?$/i.test(layerUrl);
+        const normalizedUrl = isRootUrl
+            ? layerUrl.replace(/\/?$/, "") + "/0"
+            : layerUrl;
+        const baseUrl = normalizedUrl.substring(0, normalizedUrl.lastIndexOf("/"));
+
         // --- Couche principale ---
-        const layer = new (FeatureLayer as any)({ url: layerUrl });
+        const layer = new (FeatureLayer as any)({ url: normalizedUrl });
         await layer.load();
         map.add(layer);
-        console.log("[AddLayerFromURL] Couche principale ajoutée:", layerUrl);
+
+        // ✅ Capturer l'ID assigné après map.add()
+        const layerId: string = layer.id;
 
         const relationships = layer.relationships ?? [];
         const debugRelationships = JSON.stringify(relationships);
-        console.log("[AddLayerFromURL] Relationships trouvées:", debugRelationships);
 
         if (!loadRelatedTables || relationships.length === 0) {
             return {
-                result: `Couche ajoutée : ${layerUrl} (${relationships.length} relation(s) dans le service)`,
+                result: `Couche ajoutée : ${normalizedUrl} | ${relationships.length} relation(s) dans le service`,
                 relatedTablesCount: 0,
                 debugRelationships,
+                layerId,
+                relatedTableIds: [],
             };
         }
 
         // --- Related tables ---
-        // L'URL de base du service (sans le /0 final)
-        const baseUrl = /\/\d+$/.test(layerUrl)
-            ? layerUrl.substring(0, layerUrl.lastIndexOf("/"))
-            : layerUrl;
-
         const addedTableIds: number[] = [];
+        const relatedTableIds: string[] = [];
         const errors: string[] = [];
 
         for (const rel of relationships) {
             const relId: number = rel.relatedTableId;
             if (addedTableIds.includes(relId)) continue;
 
-            const relUrl = `${baseUrl}/${relId}`;
-            const relatedLayer = new (FeatureLayer as any)({ url: relUrl });
-
+            const relatedLayer = new (FeatureLayer as any)({ url: `${baseUrl}/${relId}` });
             try {
                 await relatedLayer.load();
-                console.log(`[AddLayerFromURL] Table ID ${relId} chargée - isTable: ${relatedLayer.isTable}, geometryType: ${relatedLayer.geometryType}`);
 
                 if (relatedLayer.isTable) {
-                    // Table non spatiale : map.tables (ArcGIS JS API)
-                    // ⚠️ map.tables ne notifie pas VertiGIS directement
-                    // → les tables doivent aussi être dans le webmap pour être vues dans Feature Details
                     map.tables.add(relatedLayer);
-                    console.log(`[AddLayerFromURL] Table ID ${relId} ajoutée dans map.tables`);
                 } else {
-                    // Couche spatiale : map.layers via map.add()
                     map.add(relatedLayer);
-                    console.log(`[AddLayerFromURL] Table ID ${relId} ajoutée dans map.layers`);
                 }
+
+                // ✅ Capturer l'ID de chaque table ajoutée
+                relatedTableIds.push(relatedLayer.id);
                 addedTableIds.push(relId);
             } catch (err: any) {
-                const msg = `Table ID ${relId} (${relUrl}) : ${err?.message ?? err}`;
-                console.warn("[AddLayerFromURL] Erreur:", msg);
-                errors.push(msg);
+                errors.push(`ID ${relId}: ${err?.message ?? err}`);
             }
         }
 
@@ -127,14 +153,12 @@ export class AddLayerFromURLActivity implements IActivityHandler {
             ? `+ ${addedTableIds.length} table(s) [IDs: ${addedTableIds.join(", ")}]`
             : "(aucune table ajoutée)";
 
-        const errorMsg = errors.length > 0
-            ? ` | Erreurs: ${errors.join(" / ")}`
-            : "";
-
         return {
-            result: `Couche ajoutée ${tableMsg}${errorMsg}`,
+            result: `Couche ajoutée ${tableMsg} depuis : ${normalizedUrl}${errors.length ? " | Erreurs: " + errors.join(", ") : ""}`,
             relatedTablesCount: addedTableIds.length,
             debugRelationships,
+            layerId,              // ✅ ID couche principale
+            relatedTableIds,      // ✅ IDs tables liées
         };
     }
 }
