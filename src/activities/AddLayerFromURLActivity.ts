@@ -133,14 +133,7 @@ export class AddLayerFromURLActivity implements IActivityHandler {
             const relatedLayer = new (FeatureLayer as any)({ url: `${baseUrl}/${relId}` });
             try {
                 await relatedLayer.load();
-
-                if (relatedLayer.isTable) {
-                    map.tables.add(relatedLayer);
-                } else {
-                    map.add(relatedLayer);
-                }
-
-                // ✅ Capturer l'ID de chaque table ajoutée
+                map.add(relatedLayer); // Always map.layers for related records to work
                 relatedTableIds.push(relatedLayer.id);
                 addedTableIds.push(relId);
             } catch (err: any) {
