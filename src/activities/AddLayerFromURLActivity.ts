@@ -142,8 +142,12 @@ export class AddLayerFromURLActivity implements IActivityHandler {
             const relatedLayer = new (FeatureLayer as any)({ url: `${baseUrl}/${relId}` });
             try {
                 await relatedLayer.load();
-                // Always map.layers (not map.tables) for related records to work in VertiGIS
                 map.add(relatedLayer);
+
+                // ✅ Empêche les erreurs de rendu et d'identify
+                relatedLayer.listMode = "hide";
+                relatedLayer.popupEnabled = false;
+
                 relatedTableIds.push(relatedLayer.id);
                 addedTableIds.push(relId);
             } catch (err: any) {
