@@ -2,8 +2,7 @@ import type { IActivityHandler } from "@vertigis/workflow";
 import { MapProvider } from "@vertigis/workflow/activities/arcgis/MapProvider";
 import { activate } from "@vertigis/workflow/Hooks";
 import type { IActivityContext } from "@vertigis/workflow/IActivityHandler";
-import * as esriConfig from "esri/config";
-import  FeatureLayer from "esri/layers/FeatureLayer";
+import FeatureLayer from "esri/layers/FeatureLayer";
 import * as IdentityManager from "esri/identity/IdentityManager";
 import  ServerInfo from "esri/identity/ServerInfo";
 
@@ -61,6 +60,9 @@ export class AddLayerFromURLActivity implements IActivityHandler {
         const baseUrl = normalizedUrl.substring(0, normalizedUrl.lastIndexOf("/"));
 
         // --- Authentification ---
+        // ✅ Enterprise : IdentityManager est safe car serveur différent de VertiGIS
+        // ✅ ArcGIS Online : customParameters uniquement — ne touche pas à la session VertiGIS
+        //    (pas de esriConfig.apiKey, pas de IdentityManager.registerToken)
         if (serverUrl) {
             const info = new (ServerInfo as any)({
                 server: serverUrl,
@@ -72,8 +74,6 @@ export class AddLayerFromURLActivity implements IActivityHandler {
                 token: apiKey,
                 ssl: true,
             });
-        } else {
-            (esriConfig as any).apiKey = apiKey;
         }
 
         // --- Carte ---
@@ -85,8 +85,8 @@ export class AddLayerFromURLActivity implements IActivityHandler {
         if (!map) throw new Error("Map is not available.");
 
         // --- Couche principale ---
-        // ✅ customParameters assure que le token est inclus dans TOUTES les requêtes
-        // y compris les URLs d'attachements générées par VertiGIS
+        // customParameters : token ajouté à TOUTES les requêtes du layer
+        // (queries, features, attachements) sans impacter la session globale
         const layer = new (FeatureLayer as any)({
             url: normalizedUrl,
             customParameters: { token: apiKey },
@@ -117,7 +117,6 @@ export class AddLayerFromURLActivity implements IActivityHandler {
             const relId: number = rel.relatedTableId;
             if (addedTableIds.includes(relId)) continue;
 
-            // ✅ customParameters sur les related tables aussi
             const relatedLayer = new (FeatureLayer as any)({
                 url: `${baseUrl}/${relId}`,
                 customParameters: { token: apiKey },
