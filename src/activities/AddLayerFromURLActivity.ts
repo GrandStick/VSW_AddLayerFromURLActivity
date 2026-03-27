@@ -5,7 +5,7 @@ import type { IActivityContext } from "@vertigis/workflow/IActivityHandler";
 import * as esriConfig from "esri/config";
 import  FeatureLayer from "esri/layers/FeatureLayer";
 import * as IdentityManager from "esri/identity/IdentityManager";
-import ServerInfo from "esri/identity/ServerInfo";
+import  ServerInfo from "esri/identity/ServerInfo";
 
 export interface AddLayerFromURLActivityInputs {
     /** @displayName Layer URL @description URL of a FeatureServer or a specific layer (.../FeatureServer or .../FeatureServer/0). @required */
@@ -62,7 +62,6 @@ export class AddLayerFromURLActivity implements IActivityHandler {
 
         // --- Authentification ---
         if (serverUrl) {
-            // Enterprise : IdentityManager avec token
             const info = new (ServerInfo as any)({
                 server: serverUrl,
                 tokenServiceUrl: `${serverUrl}/sharing/rest/generateToken`,
@@ -74,7 +73,6 @@ export class AddLayerFromURLActivity implements IActivityHandler {
                 ssl: true,
             });
         } else {
-            // ArcGIS Online : esriConfig.apiKey (seule méthode compatible avec les API keys)
             (esriConfig as any).apiKey = apiKey;
         }
 
@@ -87,7 +85,12 @@ export class AddLayerFromURLActivity implements IActivityHandler {
         if (!map) throw new Error("Map is not available.");
 
         // --- Couche principale ---
-        const layer = new (FeatureLayer as any)({ url: normalizedUrl });
+        // ✅ customParameters assure que le token est inclus dans TOUTES les requêtes
+        // y compris les URLs d'attachements générées par VertiGIS
+        const layer = new (FeatureLayer as any)({
+            url: normalizedUrl,
+            customParameters: { token: apiKey },
+        });
         await layer.load();
         map.add(layer);
         const layerId: string = layer.id;
@@ -114,11 +117,14 @@ export class AddLayerFromURLActivity implements IActivityHandler {
             const relId: number = rel.relatedTableId;
             if (addedTableIds.includes(relId)) continue;
 
-            const relatedLayer = new (FeatureLayer as any)({ url: `${baseUrl}/${relId}` });
+            // ✅ customParameters sur les related tables aussi
+            const relatedLayer = new (FeatureLayer as any)({
+                url: `${baseUrl}/${relId}`,
+                customParameters: { token: apiKey },
+            });
             try {
                 await relatedLayer.load();
                 map.add(relatedLayer);
-                // Hide from layer list and identify — avoids render errors on non-spatial tables
                 relatedLayer.listMode = "hide";
                 relatedLayer.popupEnabled = false;
                 relatedTableIds.push(relatedLayer.id);
