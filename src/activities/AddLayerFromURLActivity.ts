@@ -33,7 +33,7 @@ export interface AddLayerFromURLActivityOutputs {
 }
 
 /**
- * @displayName Add Layer From URL
+ * @displayName Add Layer From URLV2
  * @category Custom Activities
  * @description Add a feature layer to the map from a URL, with optional related tables. Supports ArcGIS Online and Enterprise.
  */
