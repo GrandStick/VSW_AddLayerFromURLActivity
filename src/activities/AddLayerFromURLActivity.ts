@@ -2,20 +2,37 @@ import type { IActivityHandler } from "@vertigis/workflow";
 import { MapProvider } from "@vertigis/workflow/activities/arcgis/MapProvider";
 import { activate } from "@vertigis/workflow/Hooks";
 import type { IActivityContext } from "@vertigis/workflow/IActivityHandler";
-import FeatureLayer from "esri/layers/FeatureLayer";
+import  FeatureLayer from "esri/layers/FeatureLayer";
 import * as IdentityManager from "esri/identity/IdentityManager";
 import  ServerInfo from "esri/identity/ServerInfo";
 
 export interface AddLayerFromURLActivityInputs {
-    /** @displayName Layer URL @description URL of a FeatureServer or a specific layer (.../FeatureServer or .../FeatureServer/0). @required */
+    /**
+     * @displayName Layer URL
+     * @description URL of a FeatureServer or a specific layer (.../FeatureServer or .../FeatureServer/0).
+     * @required
+     */
     layerUrl: string;
-    /** @displayName Token / API Key @description ArcGIS Enterprise Token or ArcGIS Online API key. @required */
+    /**
+     * @displayName Token / API Key
+     * @description ArcGIS Enterprise Token or ArcGIS Online API key.
+     * @required
+     */
     apiKey: string;
-    /** @displayName Load relationship tables @description Automatically detect and add related tables from the service. */
+    /**
+     * @displayName Load relationship tables
+     * @description Automatically detect and add related tables from the service.
+     */
     loadRelatedTables?: boolean;
-    /** @displayName Enterprise server URL @description Root URL of ArcGIS Enterprise (ex: https://myserver/arcgis). Empty = ArcGIS Online. */
+    /**
+     * @displayName Enterprise server URL
+     * @description Root URL of ArcGIS Enterprise (ex: https://myserver/arcgis). Empty = ArcGIS Online.
+     */
     serverUrl?: string;
-    /** @displayName Map ID @description ID of the target map. Uses the default map if empty. */
+    /**
+     * @displayName Map ID
+     * @description ID of the target map. Uses the default map if empty.
+     */
     mapId?: string;
 }
 
@@ -35,7 +52,7 @@ export interface AddLayerFromURLActivityOutputs {
 /**
  * @displayName Add Layer From URL
  * @category Custom Activities
- * @description Add a feature layer to the map from a URL, with optional related tables. Supports ArcGIS Online and Enterprise.
+ * @description Add a feature layer to the map from a URL, with optional related tables. Supports ArcGIS Online and Enterprise (token or API key). Version 30-03-2026  (10:19)
  */
 @activate(MapProvider)
 export class AddLayerFromURLActivity implements IActivityHandler {
@@ -52,18 +69,17 @@ export class AddLayerFromURLActivity implements IActivityHandler {
         if (!layerUrl) throw new Error("'layerUrl' is required.");
         if (!apiKey) throw new Error("'apiKey' is required.");
 
-        // --- Normaliser l'URL ---
+        // --- Normaliser l'URL : /FeatureServer → /FeatureServer/0 ---
         const isRootUrl = /\/FeatureServer\/?$/i.test(layerUrl);
         const normalizedUrl = isRootUrl
             ? layerUrl.replace(/\/?$/, "") + "/0"
             : layerUrl;
         const baseUrl = normalizedUrl.substring(0, normalizedUrl.lastIndexOf("/"));
 
-        // --- Authentification ---
-        // ✅ Enterprise : IdentityManager est safe car serveur différent de VertiGIS
-        // ✅ ArcGIS Online : customParameters uniquement — ne touche pas à la session VertiGIS
-        //    (pas de esriConfig.apiKey, pas de IdentityManager.registerToken)
+        // --- Authentification : ciblée par domaine, pas globale ---
+        // ✅ Chaque service a son propre token → plusieurs couches avec des keys différentes coexistent
         if (serverUrl) {
+            // Enterprise
             const info = new (ServerInfo as any)({
                 server: serverUrl,
                 tokenServiceUrl: `${serverUrl}/sharing/rest/generateToken`,
@@ -74,27 +90,33 @@ export class AddLayerFromURLActivity implements IActivityHandler {
                 token: apiKey,
                 ssl: true,
             });
+        } else {
+            // ArcGIS Online : enregistrer sur le domaine exact du service
+            // ✅ Ne touche plus à esriConfig.apiKey (global et écrasable)
+            const serviceOrigin = new URL(normalizedUrl).origin;
+            (IdentityManager as any).registerToken({
+                server: serviceOrigin,
+                token: apiKey,
+                ssl: true,
+            });
         }
 
         // --- Carte ---
         const mapProvider = type.create();
         await mapProvider.load();
+
         const map = mapId
             ? (mapProvider as any).getMap?.(mapId) ?? mapProvider.map
             : mapProvider.map;
+
         if (!map) throw new Error("Map is not available.");
 
         // --- Couche principale ---
-        // customParameters : token ajouté à TOUTES les requêtes du layer
-        // (queries, features, attachements) sans impacter la session globale
-        const layer = new (FeatureLayer as any)({
-            url: normalizedUrl,
-            customParameters: { token: apiKey },
-        });
+        const layer = new (FeatureLayer as any)({ url: normalizedUrl });
         await layer.load();
         map.add(layer);
-        const layerId: string = layer.id;
 
+        const layerId: string = layer.id;
         const relationships = layer.relationships ?? [];
         const debugRelationships = JSON.stringify(relationships);
 
@@ -117,15 +139,15 @@ export class AddLayerFromURLActivity implements IActivityHandler {
             const relId: number = rel.relatedTableId;
             if (addedTableIds.includes(relId)) continue;
 
-            const relatedLayer = new (FeatureLayer as any)({
-                url: `${baseUrl}/${relId}`,
-                customParameters: { token: apiKey },
-            });
+            const relatedLayer = new (FeatureLayer as any)({ url: `${baseUrl}/${relId}` });
             try {
                 await relatedLayer.load();
                 map.add(relatedLayer);
+
+                // ✅ Empêche les erreurs de rendu et d'identify
                 relatedLayer.listMode = "hide";
                 relatedLayer.popupEnabled = false;
+
                 relatedTableIds.push(relatedLayer.id);
                 addedTableIds.push(relId);
             } catch (err: any) {
